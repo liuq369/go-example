@@ -1,8 +1,20 @@
 ```
-list := &liuq.InputInfo{File: "./conf.list"}
-list.GetListStruct()
+package main
 
-for _, v := range list.Key {
-    fmt.Println(v, list.Valu[v])
+import (
+	"fmt"
+
+	list "github.com/liuq369/go-example/list"
+)
+
+func main() {
+
+	l := &list.InputInfo{File: "./conf.list"}
+	l.GetListStruct()
+
+	for _, v := range l.Key {
+		fmt.Println(v, l.Valu[v])
+	}
 }
+
 ```
