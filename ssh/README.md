@@ -1,37 +1,53 @@
 ```
-		auth := &ssh.AuthInfo{
-			Host: host,
-			Port: port,
-			User: user,
-			Pass: pass,
-		}
+package main
 
-		dec, err := auth.Decryption(false)
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
+import (
+	rssh "github.com/liuq369/go-example/ssh"
+)
 
-		conn, err := auth.Connection(dec)
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
-		defer conn.Close()
+type auth struct {
+	host, port, user, pass string
+}
 
-		err1 := auth.SCP(conn, s, "/tmp/init.sh")
-		if err1 != nil {
-			fmt.Println(err1)
-			os.Exit(1)
-		}
+func main() {
 
-		cmd := []string{
-			"sudo bash -o errexit -o nounset -o pipefail /tmp/init.sh" + " " + user + " " + newp + " " + name,
-			"sudo shutdown -r 0",
-		}
-		out, err := auth.SSH(conn, cmd)
-		if err != nil {
-			fmt.Print(err, "\n", out[0])
-			os.Exit(1)
-		}
+	a := &auth{
+		host: "192.168.100.10",
+		port: "22",
+		user: "root",
+		pass: "Mama3860",
+	}
+	a.shell()
+
+}
+
+// 执行脚本
+func (in auth) shell() error {
+
+	auth := &rssh.AuthBasic{
+		Host: in.host,
+		Port: in.port,
+		User: in.user,
+		Pass: in.pass,
+	}
+
+	dec, err := auth.Decryption()
+	if err != nil {
+		return err
+	}
+
+	conn, err := auth.Connection(dec)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	sess, err := auth.Session(conn)
+	if err != nil {
+		return err
+	}
+	defer sess.Close()
+
+	return auth.SecureShellBash(sess)
+}
 ```

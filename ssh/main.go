@@ -10,32 +10,39 @@ import (
 	"path"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/terminal"
 )
 
-// AuthInfo 基本验证信息
-// key 及 pass 可选其中之一，也可全选
-type AuthInfo struct {
-	Host string
-	Port string
-	User string
-	Key  string
-	Pass string
+// Auth 基本验证信息
+type Auth struct {
+	Host string // 远程主机IP
+	Port string // 远程主机端口
+	User string // 远程主机用户名
+	Key  string // 本地密钥路径
+	Pass string // 验证密码
 }
 
 // Decryption 必须首先解密
-func (a AuthInfo) Decryption(c bool) ([]ssh.AuthMethod, error) {
+func (in Auth) Decryption() ([]ssh.AuthMethod, error) {
 
+	// 鉴权方式
 	var auths []ssh.AuthMethod
-	if c {
+	if len(in.Key) == 0 {
+
+		// 鉴权方式
+		auths = []ssh.AuthMethod{
+			ssh.Password(in.Pass),
+		}
+	} else {
 
 		// 读取密钥
-		pemBytes, err := ioutil.ReadFile(a.Key)
+		pemBytes, err := ioutil.ReadFile(in.Key)
 		if err != nil {
 			return nil, err
 		}
 
 		// 解析密钥
-		signer, err := ssh.ParsePrivateKeyWithPassphrase(pemBytes, []byte(a.Pass))
+		signer, err := ssh.ParsePrivateKeyWithPassphrase(pemBytes, []byte(in.Pass))
 		if err != nil {
 			return nil, err
 		}
@@ -44,23 +51,18 @@ func (a AuthInfo) Decryption(c bool) ([]ssh.AuthMethod, error) {
 		// 鉴权方式
 		sshs := []ssh.AuthMethod{}
 		auths = append(sshs, method)
-	} else {
-
-		// 鉴权方式
-		auths = []ssh.AuthMethod{
-			ssh.Password(a.Pass),
-		}
 	}
 
+	// 鉴权完毕
 	return auths, nil
 }
 
 // Connection 创建一个连接
-func (a AuthInfo) Connection(dec []ssh.AuthMethod) (*ssh.Client, error) {
+func (in Auth) Connection(dec []ssh.AuthMethod) (*ssh.Client, error) {
 
-	// 准备连接
+	// 连接信息
 	config := &ssh.ClientConfig{
-		User: a.User,
+		User: in.User,
 		Auth: dec,
 		HostKeyCallback: func(hostname string, remote net.Addr, key ssh.PublicKey) error {
 			return nil
@@ -68,75 +70,99 @@ func (a AuthInfo) Connection(dec []ssh.AuthMethod) (*ssh.Client, error) {
 	}
 
 	// 建立握手
-	h := net.JoinHostPort(a.Host, a.Port)
-	client, err := ssh.Dial("tcp", h, config)
+	connect, err := ssh.Dial("tcp", net.JoinHostPort(in.Host, in.Port), config)
 	if err != nil {
 		return nil, err
 	}
 
-	return client, nil
+	// 握手完毕
+	return connect, nil
 }
 
-// SSH ssh 执行命令
-func (a AuthInfo) SSH(conn *ssh.Client, cmd []string) ([]string, error) {
+// SecureShellCommand 执行非交互式命令
+func (in Auth) SecureShellCommand(conn *ssh.Client, cmd []string) ([][]byte, error) {
 
-	// defer conn.Close()
+	var out [][]byte
+	for _, v := range cmd {
 
-	var out []string
-
-	for _, k := range cmd {
-
-		// 创建会话
 		session, err := conn.NewSession()
 		if err != nil {
 			return nil, err
 		}
+		defer session.Close()
 
 		// 执行命令
-		buf, err := session.CombinedOutput(k)
+		buf, err := session.CombinedOutput(v)
 		if err != nil {
-			var out = []string{string(buf)}
-			return out, err
+			return nil, err
 		}
 
-		out = append(out, string(buf))
+		out = append(out, bytes.TrimRight(buf, "\n"))
 	}
 
-	// 返回结果
+	// 返回命令输出
 	return out, nil
 }
 
-// File 读取上传的文件
-func (a AuthInfo) File(source string) ([]byte, error) {
+// SecureShellBash ssh 执行交互式shell
+func (in Auth) SecureShellBash(conn *ssh.Client) error {
 
-	// 打开文件
-	file, err := os.Open(source)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	// 获得字节
-	contentsBytes, err := ioutil.ReadAll(file)
-	if err != nil {
-		return nil, err
-	}
-
-	return contentsBytes, nil
-}
-
-// SCP scp 上传文件
-func (a AuthInfo) SCP(conn *ssh.Client, s []byte, d string) error {
-
-	// defer conn.Close()
-
-	// 创建会话
 	session, err := conn.NewSession()
 	if err != nil {
 		return err
 	}
 	defer session.Close()
 
+	// 创建文件描述符
+	fd := int(os.Stdin.Fd())
+	oldState, err := terminal.MakeRaw(fd)
+	if err != nil {
+		return err
+	}
+	defer terminal.Restore(fd, oldState)
+
+	// 获取窗口宽高
+	width, height, err := terminal.GetSize(fd)
+	if err != nil {
+		return err
+	}
+
+	// 配置窗口宽高
+	modes := ssh.TerminalModes{
+		ssh.ECHO:          1,
+		ssh.TTY_OP_ISPEED: 14400,
+		ssh.TTY_OP_OSPEED: 14400,
+	}
+
+	// 交互式shell准备读写操作
+	session.Stdout = os.Stdout
+	session.Stderr = os.Stderr
+	session.Stdin = os.Stdin
+
+	// 创建终端
+	if err := session.RequestPty("xterm-256color", height, width, modes); err != nil {
+		return err
+	}
+
+	// 获取shell
+	if err := session.Shell(); err != nil {
+		return err
+	}
+
+	// 等待远程命令退出
+	return session.Wait()
+}
+
+// SecureCopyWrite scp 写覆盖文件
+func (in Auth) SecureCopyWrite(conn *ssh.Client, s []byte, d string) error {
+
+	session, err := conn.NewSession()
+	if err != nil {
+		return err
+	}
+	defer session.Close()
+
+	// 读取源内容字节
 	bytesReader := bytes.NewReader(s)
 	// 获得路径及文件名
 	remoteDir, remoteFile := path.Split(d)
@@ -155,10 +181,18 @@ func (a AuthInfo) SCP(conn *ssh.Client, s []byte, d string) error {
 		io.Copy(w, bytesReader)
 		fmt.Fprint(w, "\x00") // 移除以 \x00 结尾
 	}()
-	err1 := session.Run("/usr/bin/scp -tr " + remoteDir)
-	if err1 != nil {
-		return err1
+
+	// 写入文件到
+	return session.Run("/usr/bin/scp -tr " + remoteDir)
+}
+
+// SecureCopyFile scp 上传文件
+func (in Auth) SecureCopyFile(conn *ssh.Client, s string, d string) error {
+
+	file, err := ioutil.ReadFile(s)
+	if err != nil {
+		return err
 	}
 
-	return nil
+	return in.SecureCopyWrite(conn, file, d)
 }
